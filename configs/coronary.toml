@@ -1,0 +1,65 @@
+# Coronary artery tree growth configuration
+# For use with XCAT male50 heart phantom
+
+[organ]
+name = "coronary"
+nrb_path = "/home/molloi-lab/smb_mount/shared_drive/XCAT Phantom/xcat_adult_nrb_files/vmale50_heart.nrb"
+coordinate_scale = 0.1  # mm -> cm
+
+[surfaces]
+outer = "dias_pericardium"
+reference = "dias_aorta"
+cavities = [
+    "dias_lv_0",
+    "dias_lv_1",
+    "dias_lv_2",
+    "dias_lv_3",
+    "dias_lv_4",
+    "dias_la",
+    "dias_ra",
+    "dias_rv",
+]
+
+[[vessel_trees]]
+name = "LAD"
+surface_names = ["dias_lad1", "dias_lad2", "dias_lad3"]
+color = "#1f77ff"
+root_anchor_surface = "dias_aorta"
+
+[[vessel_trees]]
+name = "LCX"
+surface_names = ["dias_lcx"]
+color = "#e3342f"
+root_anchor_surface = "dias_aorta"
+
+[[vessel_trees]]
+name = "RCA"
+surface_names = ["dias_rca1", "dias_rca2"]
+color = "#22aa44"
+root_anchor_surface = "dias_aorta"
+
+[domain]
+voxel_spacing_cm = 0.05
+outer_samples = [96, 72]
+cavity_samples = [56, 40]
+dilation_radius = 1
+# coarse_seed_cm = [2.5, -1.0, 3.0]  # uncomment to pin seed
+
+[growth]
+mode = "continue_from_xcat"
+effective_supply_radius_cm = 0.00125   # 12.5 um
+capillary_diameter_cm = 0.0008         # 8 um
+max_new_branches_per_tree = 220
+graph_neighbors = 12
+min_frontier_separation_cm = 0.18
+max_path_nodes = 20
+frontier_batch = 8
+murray_gamma = 3.0
+max_segment_length_cm = 0.1
+smooth_passes = 20
+spline_density = 5
+coverage_stride = 2
+graph_stride = 0
+graph_jitter_cm = 0.0
+target_p95_distance_cm = inf
+target_max_distance_cm = inf
