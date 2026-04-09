@@ -33,6 +33,8 @@ include("centerline.jl")
 include("spatial_grid.jl")
 include("domain_builder.jl")
 include("growth_tree.jl")
+include("segment_index.jl")
+include("gpu_interface.jl")
 include("graph_routing.jl")
 include("growth_engine.jl")
 include("csv_io.jl")
@@ -72,6 +74,11 @@ export build_voxel_shell_domain_floodfill,
 # ── Tree construction ──
 export growth_tree_from_xcat,
        growth_tree_from_seed
+
+# ── Acceleration ──
+export SegmentSpatialIndex,
+       build_segment_index,
+       gpu_available
 
 # ── Growth engine ──
 export build_domain_graph,

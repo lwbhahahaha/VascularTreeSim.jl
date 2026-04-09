@@ -71,13 +71,18 @@ function build_domain_graph(points_cm::Matrix{Float64}, domain; k::Int=10)
     n = length(pts)
     neighbors = [Int[] for _ in 1:n]
     costs = [Float64[] for _ in 1:n]
-    for i in 1:n
+    # Threaded graph construction — each thread writes only to its own index
+    Threads.@threads for i in 1:n
+        local_neighbors = Int[]
+        local_costs = Float64[]
         for (d, j) in _sample_k_nearest_grid(pts, grid, i, k)
             mid = 0.5 .* (pts[i] + pts[j])
             base_cost = d * shell_midwall_cost(domain, (mid[1], mid[2], mid[3]))
-            push!(neighbors[i], j)
-            push!(costs[i], base_cost)
+            push!(local_neighbors, j)
+            push!(local_costs, base_cost)
         end
+        neighbors[i] = local_neighbors
+        costs[i] = local_costs
     end
     return DomainGraph(pts, neighbors, costs)
 end
