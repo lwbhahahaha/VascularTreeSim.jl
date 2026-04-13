@@ -1,10 +1,13 @@
 # Coronary artery tree growth configuration
 # For use with XCAT male50 heart phantom
+# Parameters matched to v5 proven fine-resolution run
 
 [organ]
 name = "coronary"
 nrb_path = "/home/molloi-lab/smb_mount/shared_drive/XCAT Phantom/xcat_adult_nrb_files/vmale50_heart.nrb"
-coordinate_scale = 0.1  # mm -> cm
+phantom_path = "/home/molloi-lab/smb_mount/shared_drive/shu_nie/PVAT_Analysis/digital phantoms/vmale50_1600x1400x500_8bit_little_endian_act_1.raw"
+phantom_dims = [1600, 1400, 500]
+coordinate_scale = 0.1  # XCAT NRB uses mm, we work in cm
 
 [surfaces]
 outer = "dias_pericardium"
@@ -39,27 +42,28 @@ color = "#22aa44"
 root_anchor_surface = "dias_aorta"
 
 [domain]
-voxel_spacing_cm = 0.05
+voxel_spacing_cm = 0.02         # Fine resolution (v5 fine run)
 outer_samples = [96, 72]
 cavity_samples = [56, 40]
 dilation_radius = 1
-# coarse_seed_cm = [2.5, -1.0, 3.0]  # uncomment to pin seed
+coarse_seed_cm = [14.085, 21.628, 26.966]   # From coarse (0.05cm) midwall computation
 
 [growth]
-mode = "continue_from_xcat"
-effective_supply_radius_cm = 0.00125   # 12.5 um
-capillary_diameter_cm = 0.0008         # 8 um
-max_new_branches_per_tree = 220
-graph_neighbors = 12
-min_frontier_separation_cm = 0.18
+mode = "continue_from_xcat"     # Continue from existing XCAT LAD/LCX/RCA
+effective_supply_radius_cm = 0.00125   # 12.5 μm
+capillary_diameter_cm = 0.0008         # 8 μm
+max_new_branches_per_tree = 2200       # v5 fine run value
+graph_neighbors = 16                   # v5 fine run
+min_frontier_separation_cm = 0.015     # v5 fine run
 max_path_nodes = 20
-frontier_batch = 8
+frontier_batch = 28                    # v5 fine run
 murray_gamma = 3.0
 max_segment_length_cm = 0.1
 smooth_passes = 20
 spline_density = 5
-coverage_stride = 2
-graph_stride = 0
-graph_jitter_cm = 0.0
-target_p95_distance_cm = inf
-target_max_distance_cm = inf
+coverage_stride = 4                    # v5 fine run
+graph_stride = 12                      # v5 fine run
+graph_jitter_cm = 0.08                 # v5 fine run
+turn_penalty = 0.5
+target_p95_distance_cm = 0.005         # v5 fine run stopping criterion
+target_max_distance_cm = 0.01          # v5 fine run stopping criterion

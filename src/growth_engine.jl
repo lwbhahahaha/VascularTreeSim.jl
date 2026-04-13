@@ -106,10 +106,19 @@ function grow_trees_mcp!(trees::Dict{String, GrowthTree}, domain;
         max_segment_length_cm::Float64=0.1,
         coverage_points_cm::Union{Nothing, Matrix{Float64}}=nothing,
         graph_points_cm::Union{Nothing, Matrix{Float64}}=nothing,
-        use_gpu::Bool=gpu_available())
+        use_gpu::Bool=gpu_available(),
+        turn_penalty::Float64=0.5,
+        graph_jitter_cm::Float64=-1.0)
 
     points_cm = coverage_points_cm === nothing ? _domain_points(domain) : coverage_points_cm
     route_points_cm = graph_points_cm === nothing ? points_cm : graph_points_cm
+    # Auto-jitter graph points to break grid alignment (default: 1/3 of domain spacing)
+    if graph_jitter_cm < 0.0
+        graph_jitter_cm = domain.spacing_cm[1] * 0.33
+    end
+    if graph_jitter_cm > 0.0
+        route_points_cm = _jitter_points_in_domain(route_points_cm, domain; max_jitter_cm=graph_jitter_cm)
+    end
     graph = build_domain_graph(route_points_cm, domain; k=graph_neighbors)
     sgrid = _build_graph_spatial_grid(graph)
     nt = Threads.nthreads()
@@ -199,7 +208,7 @@ function grow_trees_mcp!(trees::Dict{String, GrowthTree}, domain;
                 anchor_vertex, anchor_point = _choose_anchor_vertex(tree, p)
                 source_idx, _ = _nearest_graph_index(sgrid, anchor_point)
                 target_idx, _ = _nearest_graph_index(sgrid, p)
-                path_ids = _shortest_path(graph, source_idx, target_idx)
+                path_ids = _shortest_path(graph, source_idx, target_idx; turn_penalty=turn_penalty)
                 path_points = _prepare_branch_path([graph.points[i] for i in path_ids], domain;
                     max_nodes=max_path_nodes, smooth_passes=smooth_passes, spline_density=spline_density)
                 if _add_branch_path!(tree, anchor_vertex, path_points;
@@ -360,7 +369,9 @@ function run_growth(config::OrganConfig; output_dir::String="output")
         spline_density=config.spline_density,
         max_segment_length_cm=config.max_segment_length_cm,
         target_p95_distance_cm=config.target_p95_distance_cm,
-        target_max_distance_cm=config.target_max_distance_cm)
+        target_max_distance_cm=config.target_max_distance_cm,
+        turn_penalty=config.turn_penalty,
+        graph_jitter_cm=0.0)  # jitter already applied above from config
 
     println("[run_growth] exporting CSVs...")
     flush(stdout)

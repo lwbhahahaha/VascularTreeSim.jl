@@ -178,7 +178,8 @@ function _heap_pop!(heap::Vector{Tuple{Float64,Int}})
     return item
 end
 
-function _shortest_path(graph::DomainGraph, source::Int, target::Int)
+function _shortest_path(graph::DomainGraph, source::Int, target::Int;
+                        turn_penalty::Float64=0.0)
     source == target && return [source]
     n = length(graph.points)
     dist = fill(Inf, n)
@@ -191,7 +192,21 @@ function _shortest_path(graph::DomainGraph, source::Int, target::Int)
         d_u > dist[u] && continue
         u == target && break
         for (v, c) in zip(graph.neighbors[u], graph.costs[u])
-            alt = dist[u] + c
+            # Turn penalty: penalize sharp direction changes for smoother paths.
+            # This prevents grid-aligned "flying line" shortcuts through the domain.
+            tp = 0.0
+            if turn_penalty > 0.0 && prev[u] != 0
+                dir_in  = graph.points[u] - graph.points[prev[u]]
+                dir_out = graph.points[v] - graph.points[u]
+                len_in  = norm(dir_in)
+                len_out = norm(dir_out)
+                if len_in > 1e-10 && len_out > 1e-10
+                    cos_a = clamp(dot(dir_in, dir_out) / (len_in * len_out), -1.0, 1.0)
+                    # 0 for straight-ahead, turn_penalty*len_out for U-turn
+                    tp = turn_penalty * (1.0 - cos_a) * 0.5 * len_out
+                end
+            end
+            alt = dist[u] + c + tp
             if alt < dist[v]
                 dist[v] = alt
                 prev[v] = u

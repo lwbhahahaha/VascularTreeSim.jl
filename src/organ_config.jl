@@ -50,6 +50,7 @@ struct OrganConfig
     coverage_stride::Int
     graph_stride::Int
     graph_jitter_cm::Float64
+    turn_penalty::Float64
     target_p95_distance_cm::Float64
     target_max_distance_cm::Float64
 
@@ -112,6 +113,7 @@ function load_organ_config(path::AbstractString)
     coverage_stride = get(gr, "coverage_stride", 2)
     graph_stride = get(gr, "graph_stride", 0)
     graph_jitter_cm = get(gr, "graph_jitter_cm", 0.0)
+    turn_penalty = get(gr, "turn_penalty", 0.5)
     target_p95_distance_cm = get(gr, "target_p95_distance_cm", Inf)
     target_max_distance_cm = get(gr, "target_max_distance_cm", Inf)
 
@@ -130,7 +132,7 @@ function load_organ_config(path::AbstractString)
         growth_mode, effective_supply_radius_cm, capillary_diameter_cm,
         max_new_branches_per_tree, graph_neighbors, min_frontier_separation_cm,
         max_path_nodes, frontier_batch, murray_gamma, max_segment_length_cm,
-        smooth_passes, spline_density, coverage_stride, graph_stride, graph_jitter_cm,
+        smooth_passes, spline_density, coverage_stride, graph_stride, graph_jitter_cm, turn_penalty,
         target_p95_distance_cm, target_max_distance_cm,
         seed_points,
     )

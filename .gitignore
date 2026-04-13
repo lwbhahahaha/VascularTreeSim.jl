@@ -1,0 +1,37 @@
+# Julia
+Manifest.toml
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+.julia/
+
+# Generated pipeline outputs (keep Python helper scripts)
+output/*.csv
+output/*.raw
+output/*.html
+output/*.txt
+output/*.hdr
+output/*.img
+output/*.nrrd
+output/*.nii
+output/*.nii.gz
+output/*.png
+output/*.log
+output/__pycache__/
+output/*.pyc
+
+# Test-generated artifacts
+test/output/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

@@ -22,10 +22,13 @@ module VascularTreeSim
 
 using Random
 using DelimitedFiles
+using Dates
+using Printf
 using LinearAlgebra
 using StaticArrays
 using Statistics
 using TOML
+import Base.Threads
 
 include("organ_config.jl")
 include("nrb_parser.jl")
@@ -37,8 +40,10 @@ include("segment_index.jl")
 include("gpu_interface.jl")
 include("graph_routing.jl")
 include("growth_engine.jl")
+include("phantom_extraction.jl")
 include("csv_io.jl")
 include("viewer.jl")
+include("voxelizer.jl")
 
 # ── Types ──
 export OrganConfig,
@@ -84,9 +89,27 @@ export SegmentSpatialIndex,
 export build_domain_graph,
        grow_trees_mcp!
 
+# ── Phantom extraction ──
+export PhantomData,
+       load_xcat_phantom,
+       extract_structure_points,
+       extract_all_structures,
+       save_structure_csv,
+       XCAT_LABELS,
+       EXTRACTION_GROUPS,
+       EXTRACTION_STRIDES
+
+# ── Voxelization & Raw output ──
+export voxelize_trees,
+       embed_trees_in_phantom!,
+       write_phantom_raw,
+       nrb_to_phantom,
+       NRB_TO_PHANTOM_OFFSET
+
 # ── I/O & Visualization ──
 export write_growth_csv,
-       growth_viewer_html
+       growth_viewer_html,
+       domain_check_html
 
 # ── Top-level pipeline ──
 export run_growth
