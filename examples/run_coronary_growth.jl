@@ -203,7 +203,8 @@ if config.growth_mode == :continue_from_xcat
     xcat_trees = build_vessel_trees(centerlines, config)
     for spec in config.vessel_trees
         haskey(xcat_trees, spec.name) || continue
-        growth_trees[spec.name] = growth_tree_from_xcat(spec.name, xcat_trees[spec.name])
+        growth_trees[spec.name] = growth_tree_from_xcat(spec.name, xcat_trees[spec.name];
+            terminal_diameter_cm=config.terminal_diameter_cm)
         n_seg = length(growth_trees[spec.name].segment_start)
         n_vert = length(growth_trees[spec.name].vertices)
         println("  $(spec.name): $(n_seg) XCAT segments, $(n_vert) vertices")
@@ -211,7 +212,8 @@ if config.growth_mode == :continue_from_xcat
 elseif config.growth_mode == :seed_point
     for spec in config.vessel_trees
         haskey(config.seed_points, spec.name) || continue
-        growth_trees[spec.name] = growth_tree_from_seed(spec.name, config.seed_points[spec.name])
+        growth_trees[spec.name] = growth_tree_from_seed(spec.name, config.seed_points[spec.name];
+            terminal_diameter_cm=config.terminal_diameter_cm)
         println("  $(spec.name): seeded at $(config.seed_points[spec.name])")
     end
 else
@@ -257,6 +259,26 @@ for (name, st) in stats
     println("  $(name): $(st.added) grown + XCAT segments, $(st.terminals) terminals, p95=$(round(st.p95*10; digits=2))mm")
 end
 flush(stdout)
+
+# ── Post-growth subdivision: bifurcate terminals to finer diameter ──
+if config.subdivision_terminal_diameter_cm > 0.0 && config.subdivision_terminal_diameter_cm < config.terminal_diameter_cm
+    println("\n[Step 3b] Subdividing terminals: $(round(config.terminal_diameter_cm*1e4; digits=0)) μm → $(round(config.subdivision_terminal_diameter_cm*1e4; digits=0)) μm ...")
+    flush(stdout)
+    for (name, tree) in growth_trees
+        subdivide_terminals!(tree;
+            target_diameter_cm=config.subdivision_terminal_diameter_cm,
+            gamma=config.murray_gamma,
+            domain=domain)  # clip sub-branches that leave myocardium
+    end
+    # Print diameter range after subdivision
+    for (name, tree) in growth_trees
+        dmin = minimum(tree.segment_diameter_cm) * 1e4
+        dmax = maximum(tree.segment_diameter_cm) * 1e4
+        nt = length(VascularTreeSim._branch_terminals(tree))
+        println("  $(name): $(nt) terminals, diam $(round(dmin; digits=1))-$(round(dmax; digits=1)) μm")
+    end
+    flush(stdout)
+end
 
 # ══════════════════════════════════════════════════════════════
 # Step 4: Export CSVs + viewer

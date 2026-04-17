@@ -35,6 +35,22 @@ function voxel_center_cm(domain::VoxelShellDomain, i::Int, j::Int, k::Int)
     return domain.origin_cm + SVector((i - 0.5) * domain.spacing_cm[1], (j - 0.5) * domain.spacing_cm[2], (k - 0.5) * domain.spacing_cm[3])
 end
 
+"""
+    point_in_domain(domain, pt) → Bool
+
+Return true if `pt` (SVector or NTuple in cm) lies inside `domain.mask`.
+Used to clip vertex placement during subdivision so branches don't leak
+outside the myocardial shell.
+"""
+function point_in_domain(domain::VoxelShellDomain, pt)
+    i = floor(Int, (pt[1] - domain.origin_cm[1]) / domain.spacing_cm[1]) + 1
+    j = floor(Int, (pt[2] - domain.origin_cm[2]) / domain.spacing_cm[2]) + 1
+    k = floor(Int, (pt[3] - domain.origin_cm[3]) / domain.spacing_cm[3]) + 1
+    dims = size(domain.mask)
+    (1 <= i <= dims[1] && 1 <= j <= dims[2] && 1 <= k <= dims[3]) || return false
+    return domain.mask[i, j, k]
+end
+
 function shell_distance_components(domain::VoxelShellDomain, point)
     _, outer_sd = _nearest_surface_info(domain.outer_surface_points, domain.outer_surface_normals, domain.outer_query_grid, point)
     nearest_cavity_sd = Inf
@@ -388,6 +404,7 @@ function build_voxel_shell_domain_floodfill(outer_surface::XCATNurbsSurface, cav
     end
     cavity_union = falses(dims...)
     cavity_margin_cm = voxel_spacing_cm
+    tube_max_distance_cm = 2.0  # SDF unreliable beyond this for tubular surfaces
     for idx in eachindex(cavity_surfaces)
         surface = cavity_surfaces[idx]
         bbox = _surface_bbox(cavity_points_s[idx], lo, spacing, dims; pad_voxels=3)
@@ -401,6 +418,15 @@ function build_voxel_shell_domain_floodfill(outer_surface::XCATNurbsSurface, cav
         flush(stdout)
         cwall = _surface_wall_mask(surface, local_lo, spacing, local_dims; n_u=cavity_samples[1], n_v=cavity_samples[2], coordinate_scale=coordinate_scale, dilation_radius=dilation_radius)
         cseed = _seed_from_surface_centroid(surface, local_lo, spacing, local_dims; n_u=cavity_samples[1], n_v=cavity_samples[2], coordinate_scale=coordinate_scale)
+        # Auto-detect chamber vs tube: centroid of a chamber (LV, RV, LA, RA)
+        # lands inside outer_interior; centroid of a tube (aorta, SVC, IVC)
+        # lands outside. Tubes need a max_distance constraint to prevent SDF
+        # over-subtraction far from the actual surface samples.
+        global_cseed = _seed_from_surface_centroid(surface, lo, spacing, dims; n_u=cavity_samples[1], n_v=cavity_samples[2], coordinate_scale=coordinate_scale)
+        gci, gcj, gck = global_cseed
+        is_tube = !(1 <= gci <= dims[1] && 1 <= gcj <= dims[2] && 1 <= gck <= dims[3]) || !outer_interior[gci, gcj, gck]
+        println("[domain] cavity $(idx) is_tube=$(is_tube)")
+        flush(stdout)
         allowed = falses(local_dims...)
         for lk in 1:local_dims[3], lj in 1:local_dims[2], li in 1:local_dims[1]
             gi = bbox[1] + li - 1
@@ -408,9 +434,37 @@ function build_voxel_shell_domain_floodfill(outer_surface::XCATNurbsSurface, cav
             gk = bbox[5] + lk - 1
             outer_interior[gi, gj, gk] || continue
             p = local_lo + SVector((li - 0.5) * spacing[1], (lj - 0.5) * spacing[2], (lk - 0.5) * spacing[3])
-            _, cavity_sd = _nearest_surface_info(cavity_points_s[idx], cavity_normals_s[idx], cavity_grids[idx], (p[1], p[2], p[3]))
+            _, cavity_sd, euclid_d = _nearest_surface_info(cavity_points_s[idx], cavity_normals_s[idx], cavity_grids[idx], (p[1], p[2], p[3]))
             cavity_sd <= cavity_margin_cm || continue
+            # For tubes, reject voxels far from the actual surface samples
+            # where the SDF extrapolation is unreliable
+            is_tube && euclid_d > tube_max_distance_cm && continue
             allowed[li, lj, lk] = true
+        end
+        # Fallback seed: for long tubular cavity surfaces (aorta, SVC, IVC, etc.)
+        # the surface centroid lands outside outer_interior, so the centroid seed
+        # is not in `allowed` and flood-fill returns empty. Scan `allowed` for any
+        # valid voxel and use that as the seed instead.
+        ci, cj, ck = cseed
+        seed_valid = (1 <= ci <= local_dims[1] && 1 <= cj <= local_dims[2] && 1 <= ck <= local_dims[3]) &&
+                     allowed[ci, cj, ck] && !cwall[ci, cj, ck]
+        if !seed_valid
+            fallback = nothing
+            for lk in 1:local_dims[3], lj in 1:local_dims[2], li in 1:local_dims[1]
+                if allowed[li, lj, lk] && !cwall[li, lj, lk]
+                    fallback = (li, lj, lk)
+                    break
+                end
+            end
+            if fallback === nothing
+                println("[domain] cavity $(idx) has no valid interior inside outer_interior — skipping")
+                flush(stdout)
+                GC.gc()
+                continue
+            end
+            cseed = fallback
+            println("[domain] cavity $(idx) centroid seed invalid — fallback seed=$(cseed)")
+            flush(stdout)
         end
         crec = _flood_fill_from_seed(cwall, allowed, cseed)
         println("[domain] cavity $(idx) region vox=$(count(crec))")

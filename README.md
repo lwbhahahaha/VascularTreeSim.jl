@@ -19,13 +19,29 @@ adequately perfused. Outputs include per-tree CSV segment files and an interacti
   `seed_point` (grow from scratch at user-specified coordinates).
 - **Competitive round-robin territory** -- multiple trees (e.g. LAD, LCX, RCA) grow
   simultaneously, each claiming the tissue closest to its existing branches.
-- **Murray's law diameter updates** propagate upstream after every branch addition.
+- **Strict Murray-derived diameters** -- every segment diameter (XCAT and grown) is
+  recomputed as `d = d_term × N^(1/γ)` from its subtree terminal count, so Murray's
+  law is satisfied globally, not only at the branch being added. The XCAT ostium
+  diameter acts only as a capacity ceiling via a per-tree terminal budget.
+- **Hybrid growth + subdivision pipeline** -- grow first to a realistic 200 μm
+  terminal, then recursively bifurcate each tip to 8 μm capillaries. This produces
+  physiological root diameters (mm-scale) and true capillary counts (tens of
+  millions) in a single pipeline.
+- **Domain-clipped subdivision with rotation retry** -- bifurcation children are
+  tested against the voxel mask; up to 8 random plane rotations are tried per
+  split so the tree stays inside the anatomical shell without losing whole
+  subtrees to a single unlucky random direction.
+- **Chamber vs. tubular cavity auto-detection** -- tubular surfaces whose centroid
+  falls outside the organ wall (e.g. aorta, SVC, IVC in a cardiac phantom) are
+  automatically detected and given a bounded SDF subtraction + fallback flood-fill
+  seed, preventing over-subtraction far from the actual surface samples.
 - **Catmull-Rom spline smoothing** with domain-constrained Laplacian passes produces
   anatomically plausible branch geometry.
 - **Heap-based Dijkstra routing** on a k-nearest-neighbor voxel graph ensures paths
   stay within the myocardial shell.
-- **Coverage-driven stopping** -- growth halts when P95/max distance targets are met
-  or the branch budget is exhausted.
+- **Coverage-driven + stall-aware stopping** -- growth halts when P95/max distance
+  targets are met, when the branch budget is exhausted, or when P95 stops
+  improving for 20 consecutive rounds.
 - **Interactive HTML viewer** (Plotly-based) with diameter-binned line widths and
   per-tree color coding.
 
@@ -88,7 +104,7 @@ The `output/` directory will contain:
 
 ## Architecture Overview
 
-The pipeline executed by `run_growth` proceeds through six stages:
+The pipeline executed by `run_growth` proceeds through these stages:
 
 ```
 NRB file
@@ -102,15 +118,20 @@ Centerline trees (Dict{String, XCATCenterlineTree})
   v
 GrowthTree structs (mutable, per-vessel)
   |
-  |  build_voxel_shell_domain_floodfill()
+  |  build_voxel_shell_domain_floodfill()  -- chamber/tube auto-detection
   v
-VoxelShellDomain (3-D BitArray mask of myocardial wall)
+VoxelShellDomain (3-D BitArray mask of organ wall)
   |  build_domain_graph()  -- k-NN graph over voxel points
   v
 DomainGraph (nodes + weighted edges)
   |  grow_trees_mcp!()  -- competitive round-robin MCP growth
-  v
+  v                         (strict Murray: d = d_term × N^(1/γ) everywhere)
 Grown GrowthTree structs
+  |
+  |  subdivide_terminals!()  -- optional: recursive bifurcation to finer
+  v                             terminal diameter, domain-clipped with
+  v                             rotation retry
+Subdivided GrowthTree structs
   |  write_growth_csv()  +  growth_viewer_html()
   v
 CSV files  +  HTML viewer
@@ -172,7 +193,9 @@ CSV files  +  HTML viewer
 |---|---|---|---|
 | `mode` | `String` | `"continue_from_xcat"` | Growth mode: `"continue_from_xcat"` or `"seed_point"` |
 | `effective_supply_radius_cm` | `Float64` | `0.00125` | Radius within which a point is considered perfused |
-| `capillary_diameter_cm` | `Float64` | `0.0008` | Terminal (capillary) diameter cutoff |
+| `capillary_diameter_cm` | `Float64` | `0.0008` | Terminal (capillary) diameter cutoff (legacy; use `terminal_diameter_cm`) |
+| `terminal_diameter_cm` | `Float64` | `capillary_diameter_cm` | Murray-strict terminal (leaf) diameter for the growth phase. Root diameter scales as `d_term × N_terminals^(1/γ)`. |
+| `subdivision_terminal_diameter_cm` | `Float64` | `0.0` | If > 0 and < `terminal_diameter_cm`, run post-growth recursive bifurcation on every terminal until segment diameter reaches this value. `0` disables subdivision. |
 | `max_new_branches_per_tree` | `Int` | `220` | Maximum branches to add per tree |
 | `graph_neighbors` | `Int` | `12` | k for the k-nearest-neighbor domain graph |
 | `min_frontier_separation_cm` | `Float64` | `0.18` | Minimum spacing between frontier targets in a batch |
@@ -374,9 +397,36 @@ growth_tree_from_xcat(name::String, tree::XCATCenterlineTree) -> GrowthTree
 Convert an XCAT centerline tree into a mutable `GrowthTree`.
 
 ```julia
-growth_tree_from_seed(name::String, seed_point_cm::SVector{3,Float64}) -> GrowthTree
+growth_tree_from_seed(name::String, seed_point_cm::SVector{3,Float64};
+                      terminal_diameter_cm::Float64=0.004) -> GrowthTree
 ```
 Create a single-vertex `GrowthTree` at the given seed coordinate.
+
+```julia
+subdivide_terminals!(tree::GrowthTree;
+                     target_diameter_cm::Float64,
+                     gamma::Float64=3.0,
+                     branch_half_angle::Float64=0.4,
+                     ld_ratio::Float64=12.0,
+                     domain::Union{Nothing, VoxelShellDomain}=nothing)
+```
+Recursively bifurcate every terminal until segment diameter reaches
+`target_diameter_cm`. Pass `domain` to clip sub-branches that would leave the
+voxel mask (uses 8-attempt rotation retry per split).
+
+```julia
+smooth_junction_taper!(tree::GrowthTree; gamma::Float64=3.0)
+```
+Optional post-pass: at each XCAT↔grown junction, distribute the Murray-residual
+flow budget among grown children and apply an exponentially decaying diameter
+boost through their subtrees. Not needed in the strict-Murray regime (all
+diameters are already Murray-derived).
+
+```julia
+point_in_domain(domain::VoxelShellDomain, pt) -> Bool
+```
+Test whether a point (cm) lies inside the voxel mask. Used internally by
+`subdivide_terminals!` for boundary-aware clipping.
 
 ### Graph and Routing
 
@@ -440,17 +490,55 @@ followed by domain-constrained Laplacian smoothing (`_smooth_path_in_domain`) th
 averages each interior waypoint with its neighbors while rejecting moves that exit
 the domain mask.
 
-### Murray's Law
+### Strict Murray-Derived Diameters
 
-After each branch is added, diameters are propagated upstream via Murray's law:
+Every segment diameter -- XCAT and grown -- is derived purely from its subtree
+terminal count:
 
 ```
-d_parent^gamma = sum(d_child^gamma)
+d = d_term × N_terminals^(1/γ)
 ```
 
-where `gamma` defaults to 3.0. This ensures physiologically consistent diameter
-tapering throughout the tree. The update is applied from the branch anchor vertex
-back to the root (`_update_upstream_murray!`).
+where `γ` defaults to 3.0 (classic Murray) and `d_term` is the tree's terminal
+(leaf) diameter. This makes Murray's law hold at every junction by construction,
+not just where branches are added. The XCAT ostium diameter acts only as a
+capacity ceiling: before adding a new terminal, `_can_add_terminal_at_anchor`
+rejects the branch if `total_terminals + 1 > (d_root / d_term)^γ`.
+
+### Hybrid Growth + Subdivision
+
+Direct growth to 8 μm terminals saturates coverage at ~10⁴ terminals, which under
+Murray gives sub-mm root diameters (unphysiological). The hybrid pipeline splits
+the problem:
+
+1. **Growth phase** at `terminal_diameter_cm` (e.g. 200 μm) -- the MCP routing
+   layer pushes branches until coverage stalls. This yields realistic
+   mm-scale root diameters.
+2. **Subdivision phase** at `subdivision_terminal_diameter_cm` (e.g. 8 μm) --
+   `subdivide_terminals!` recursively bifurcates each tip with symmetric Murray
+   splits (`d_child = d_parent / 2^(1/γ)`), doubling the tree depth until the
+   target diameter is reached. `_recompute_all_murray!` then walks the whole
+   tree bottom-up and re-derives every diameter from the new leaf counts, so the
+   `d = d_term × N^(1/γ)` identity remains globally exact.
+
+Subdivision is domain-aware: each candidate child vertex is tested against the
+voxel mask, and up to eight random rotations of the bifurcation plane are tried
+to find one where both children land inside the shell. Without the rotation
+retry, a single unlucky direction near the boundary can cascade into losing
+~2^depth descendants and producing visible holes in the perfused tissue.
+
+### Chamber vs. Tubular Cavity Handling
+
+Cardiac cavities span two very different shape classes: chambers (LV, RV, LA,
+RA) whose centroids land inside the organ wall, and tubes (aorta, SVC, IVC)
+whose centroids fall outside. `build_voxel_shell_domain_floodfill` auto-detects
+the class from the centroid's location relative to `outer_interior` and:
+
+- For chambers: standard SDF subtraction + centroid-seeded flood fill.
+- For tubes: SDF subtraction bounded at 2 cm (Euclidean distance to nearest
+  surface sample), plus a fallback seed that scans for any allowed voxel if the
+  centroid-based seed is invalid. This prevents the unbounded SDF from
+  subtracting large regions of perfectly valid wall far from the tube.
 
 ### Competitive Round-Robin
 

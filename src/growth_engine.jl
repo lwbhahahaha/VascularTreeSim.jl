@@ -183,6 +183,9 @@ function grow_trees_mcp!(trees::Dict{String, GrowthTree}, domain;
     # ── Competitive round-robin growth ──
     total_added = Dict(name => 0 for name in branch_names)
     round_num = 0
+    best_p95 = Inf
+    stall_rounds = 0
+    max_stall_rounds = 20   # stop if p95 hasn't improved in this many rounds
 
     while true
         round_num += 1
@@ -212,7 +215,7 @@ function grow_trees_mcp!(trees::Dict{String, GrowthTree}, domain;
                 path_points = _prepare_branch_path([graph.points[i] for i in path_ids], domain;
                     max_nodes=max_path_nodes, smooth_passes=smooth_passes, spline_density=spline_density)
                 if _add_branch_path!(tree, anchor_vertex, path_points;
-                        cutoff_diameter_cm=capillary_diameter_cm, gamma=gamma,
+                        gamma=gamma,
                         max_branch_length_cm=Inf, max_segment_length_cm=max_segment_length_cm)
                     total_added[name] += 1
                     local_added += 1
@@ -251,13 +254,32 @@ function grow_trees_mcp!(trees::Dict{String, GrowthTree}, domain;
         all_maxed = all(total_added[name] >= max_new_branches_per_tree for name in branch_names)
         p95_ok = isfinite(target_p95_distance_cm) && current_p95 <= target_p95_distance_cm
         max_ok = isfinite(target_max_distance_cm) && current_max <= target_max_distance_cm
-        (all_maxed || (p95_ok && max_ok) || !round_progress) && break
+
+        # Stall detection: stop if p95 hasn't improved in max_stall_rounds
+        if current_p95 < best_p95 - 1e-6
+            best_p95 = current_p95
+            stall_rounds = 0
+        else
+            stall_rounds += 1
+        end
+        coverage_stalled = stall_rounds >= max_stall_rounds
+
+        if coverage_stalled && round_num > 10
+            println("[growth] STOP: p95 stalled at $(round(best_p95; digits=5)) cm for $(stall_rounds) rounds")
+            flush(stdout)
+        end
+
+        (all_maxed || (p95_ok && max_ok) || !round_progress || (coverage_stalled && round_num > 10)) && break
     end
 
     # Free GPU resources if used
     if gpu_state !== nothing
         _gpu_free!(gpu_state)
     end
+
+    # Note: XCAT segment diameters are Murray-derived during growth (same as grown
+    # segments). Only the root (ostium) segment retains its original XCAT diameter.
+    # No post-processing junction smoothing needed.
 
     # Final per-tree stats (THREADED distance computation)
     territories = Dict(name => Int[] for name in branch_names)
@@ -336,11 +358,13 @@ function run_growth(config::OrganConfig; output_dir::String="output")
         xcat_trees = build_vessel_trees(centerlines, config)
         for spec in config.vessel_trees
             haskey(xcat_trees, spec.name) || continue
-            growth_trees[spec.name] = growth_tree_from_xcat(spec.name, xcat_trees[spec.name])
+            growth_trees[spec.name] = growth_tree_from_xcat(spec.name, xcat_trees[spec.name];
+                terminal_diameter_cm=config.terminal_diameter_cm)
         end
     elseif config.growth_mode == :seed_point
         for spec in config.vessel_trees
-            haskey(config.seed_points, spec.name) && (growth_trees[spec.name] = growth_tree_from_seed(spec.name, config.seed_points[spec.name]))
+            haskey(config.seed_points, spec.name) && (growth_trees[spec.name] = growth_tree_from_seed(spec.name, config.seed_points[spec.name];
+                terminal_diameter_cm=config.terminal_diameter_cm))
         end
     else
         error("Unknown growth mode: $(config.growth_mode)")

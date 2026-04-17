@@ -74,11 +74,14 @@ export build_voxel_shell_domain_floodfill,
        coverage_target_points,
        coverage_target_points_blockwise,
        shell_distance_components,
-       shell_midwall_cost
+       shell_midwall_cost,
+       point_in_domain
 
 # ── Tree construction ──
 export growth_tree_from_xcat,
-       growth_tree_from_seed
+       growth_tree_from_seed,
+       smooth_junction_taper!,
+       subdivide_terminals!
 
 # ── Acceleration ──
 export SegmentSpatialIndex,

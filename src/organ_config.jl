@@ -38,6 +38,8 @@ struct OrganConfig
     growth_mode::Symbol             # :continue_from_xcat or :seed_point
     effective_supply_radius_cm::Float64
     capillary_diameter_cm::Float64
+    terminal_diameter_cm::Float64   # Murray-strict terminal (leaf) diameter — all grown leaves at this size
+    subdivision_terminal_diameter_cm::Float64  # final terminal diameter after recursive subdivision (0 = no subdivision)
     max_new_branches_per_tree::Int
     graph_neighbors::Int
     min_frontier_separation_cm::Float64
@@ -101,6 +103,9 @@ function load_organ_config(path::AbstractString)
     growth_mode = Symbol(get(gr, "mode", "continue_from_xcat"))
     effective_supply_radius_cm = get(gr, "effective_supply_radius_cm", 1.25e-3)
     capillary_diameter_cm = get(gr, "capillary_diameter_cm", 8e-4)
+    # Default terminal_diameter_cm to capillary_diameter_cm if not specified — backwards compat
+    terminal_diameter_cm = get(gr, "terminal_diameter_cm", capillary_diameter_cm)
+    subdivision_terminal_diameter_cm = get(gr, "subdivision_terminal_diameter_cm", 0.0)
     max_new_branches_per_tree = get(gr, "max_new_branches_per_tree", 220)
     graph_neighbors = get(gr, "graph_neighbors", 12)
     min_frontier_separation_cm = get(gr, "min_frontier_separation_cm", 0.18)
@@ -129,7 +134,7 @@ function load_organ_config(path::AbstractString)
         outer_surface, cavity_surfaces,
         vessel_trees, reference_surface,
         voxel_spacing_cm, outer_samples, cavity_samples, dilation_radius, coarse_seed_cm,
-        growth_mode, effective_supply_radius_cm, capillary_diameter_cm,
+        growth_mode, effective_supply_radius_cm, capillary_diameter_cm, terminal_diameter_cm, subdivision_terminal_diameter_cm,
         max_new_branches_per_tree, graph_neighbors, min_frontier_separation_cm,
         max_path_nodes, frontier_batch, murray_gamma, max_segment_length_cm,
         smooth_passes, spline_density, coverage_stride, graph_stride, graph_jitter_cm, turn_penalty,

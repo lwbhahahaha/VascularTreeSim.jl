@@ -12,6 +12,10 @@ coordinate_scale = 0.1  # XCAT NRB uses mm, we work in cm
 [surfaces]
 outer = "dias_pericardium"
 reference = "dias_aorta"
+# Chamber cavities are subtracted via SDF flood-fill (no distance constraint).
+# Tubular cavities (aorta, SVC, IVC) are auto-detected: their surface centroid
+# falls outside outer_interior, so domain_builder applies a 2 cm max_distance
+# constraint to prevent SDF over-subtraction far from the actual surface.
 cavities = [
     "dias_lv_0",
     "dias_lv_1",
@@ -21,6 +25,10 @@ cavities = [
     "dias_la",
     "dias_ra",
     "dias_rv",
+    "dias_pul_art",
+    "dias_aorta",
+    "dias_sup_vc",
+    "dias_inf_vc",
 ]
 
 [[vessel_trees]]
@@ -51,8 +59,10 @@ coarse_seed_cm = [14.085, 21.628, 26.966]   # From coarse (0.05cm) midwall compu
 [growth]
 mode = "continue_from_xcat"     # Continue from existing XCAT LAD/LCX/RCA
 effective_supply_radius_cm = 0.00125   # 12.5 μm
-capillary_diameter_cm = 0.0008         # 8 μm
-max_new_branches_per_tree = 2200       # v5 fine run value
+capillary_diameter_cm = 0.0008         # 8 μm  (legacy: kept for backwards compat)
+terminal_diameter_cm = 0.02            # 200 μm — Murray-strict terminal (leaf) diameter for growth phase
+subdivision_terminal_diameter_cm = 0.0008  # 8 μm — recursive bifurcation of terminals to capillary level
+max_new_branches_per_tree = 200000     # very large cap — real stop is Murray budget exhaustion / coverage
 graph_neighbors = 16                   # v5 fine run
 min_frontier_separation_cm = 0.015     # v5 fine run
 max_path_nodes = 20

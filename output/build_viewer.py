@@ -37,7 +37,8 @@ TREE_SPECS = {
     "RCA": {"csv": OUT / "rca_segments.csv", "color": "#22aa44", "color_rgb": (34, 170, 68)},
 }
 
-MAX_DOMAIN_DISPLAY_POINTS = 600_000
+MAX_DOMAIN_DISPLAY_POINTS = 300_000
+MAX_DISPLAY_SEGMENTS = 60_000  # auto-filter by diameter if total segments exceed this
 N_SIDES = 6  # hexagonal cross-section for cylinders
 
 
@@ -70,21 +71,76 @@ def load_points_csv(path: Path, max_points: int = 0):
     return xs, ys, zs
 
 
-def load_tree_lines(path: Path):
+def load_tree_lines(path: Path, min_diameter: float = 0.0):
+    """Stream CSV and materialize only rows with diameter >= min_diameter.
+
+    For very large files (10^8+ segments), pre-filtering by diameter avoids
+    allocating a dict-per-segment for rows we would discard anyway.
+    """
     rows = []
     with path.open() as f:
         reader = csv.DictReader(f)
         for row in reader:
+            d = float(row["diameter_um"])
+            if d < min_diameter:
+                continue
             rows.append({
                 "x1": float(row["x1_cm"]), "y1": float(row["y1_cm"]), "z1": float(row["z1_cm"]),
                 "x2": float(row["x2_cm"]), "y2": float(row["y2_cm"]), "z2": float(row["z2_cm"]),
-                "diameter_um": float(row["diameter_um"]),
+                "diameter_um": d,
                 "length_mm": float(row["length_mm"]),
                 "segment_id": int(row["segment_id"]),
                 "parent_segment_id": int(row["parent_segment_id"]),
                 "label": row.get("label", ""),
             })
     return rows
+
+
+def scan_tree_diameters(path: Path):
+    """First pass: stream CSV and collect only diameter column as a float32 numpy array.
+
+    Avoids allocating per-row dicts for trees with 10^8+ segments. Returns a
+    numpy array of all diameters.
+    """
+    # Chunk-based append to avoid repeated realloc; 1M floats per chunk = 4 MB.
+    chunk_size = 1_000_000
+    chunks = []
+    buf = np.empty(chunk_size, dtype=np.float32)
+    n = 0
+    with path.open() as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if n == chunk_size:
+                chunks.append(buf)
+                buf = np.empty(chunk_size, dtype=np.float32)
+                n = 0
+            buf[n] = float(row["diameter_um"])
+            n += 1
+    if n > 0:
+        chunks.append(buf[:n])
+    if not chunks:
+        return np.empty(0, dtype=np.float32)
+    return np.concatenate(chunks)
+
+
+def find_tree_root_from_csv(path: Path):
+    """Find root vertex (parent_segment_id=0 or largest-diameter fallback) in a single pass."""
+    root_xyz = None
+    fallback_d = -1.0
+    fallback_xyz = None
+    with path.open() as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if int(row["parent_segment_id"]) == 0:
+                if root_xyz is None:
+                    root_xyz = (float(row["x1_cm"]), float(row["y1_cm"]), float(row["z1_cm"]))
+                    # Keep scanning briefly only if no explicit root; but since we found one, break.
+                    return root_xyz
+            d = float(row["diameter_um"])
+            if d > fallback_d:
+                fallback_d = d
+                fallback_xyz = (float(row["x1_cm"]), float(row["y1_cm"]), float(row["z1_cm"]))
+    return root_xyz if root_xyz is not None else fallback_xyz
 
 
 def find_tree_root(rows):
@@ -302,21 +358,55 @@ def main():
             "hoverinfo": "skip", "visible": False,
         })
 
-    # ── Load trees ──
-    all_rows = {}
-    all_diams = []
+    # ── Pass 1: scan diameters only (memory-efficient for 10^8+ segments) ──
+    tree_diams = {}  # branch -> np.float32 array
     tree_roots = {}
+    total_segs = 0
     for branch, spec in TREE_SPECS.items():
         if not spec["csv"].exists():
             print(f"  {branch}: CSV not found, skipping")
             continue
-        rows = load_tree_lines(spec["csv"])
+        diams = scan_tree_diameters(spec["csv"])
+        tree_diams[branch] = diams
+        tree_roots[branch] = find_tree_root_from_csv(spec["csv"])
+        total_segs += diams.size
+        print(f"  {branch}: {diams.size:,} segments, diam {diams.min():.1f}-{diams.max():.1f} \u03bcm")
+
+    if total_segs == 0:
+        print("No tree data found!"); return
+
+    # ── Determine display-diameter threshold to cap total rendered segments ──
+    min_display_diam = 0.0
+    if total_segs > MAX_DISPLAY_SEGMENTS:
+        # Partition-select to find the MAX_DISPLAY_SEGMENTS-th largest diameter
+        # across all trees without fully sorting.
+        combined = np.concatenate(list(tree_diams.values()))
+        k = MAX_DISPLAY_SEGMENTS
+        if k >= combined.size:
+            min_display_diam = float(combined.min())
+        else:
+            # np.partition puts the k-th largest at position -k (O(n) avg).
+            part = np.partition(combined, -k)
+            min_display_diam = float(part[-k])
+        del combined
+        print(f"  Display threshold: {min_display_diam:.1f} μm (target ≤{MAX_DISPLAY_SEGMENTS:,} segments)")
+
+    # ── Pass 2: load only rows with diameter >= threshold ──
+    all_rows = {}
+    all_diams = []
+    for branch, spec in TREE_SPECS.items():
+        if branch not in tree_diams:
+            continue
+        rows = load_tree_lines(spec["csv"], min_diameter=min_display_diam)
         all_rows[branch] = rows
         all_diams.extend(r["diameter_um"] for r in rows)
-        tree_roots[branch] = find_tree_root(rows)
-        print(f"  {branch}: {len(rows):,} segments, "
-              f"diam {min(r['diameter_um'] for r in rows):.1f}"
-              f"-{max(r['diameter_um'] for r in rows):.1f} \u03bcm")
+        before = tree_diams[branch].size
+        if min_display_diam > 0:
+            print(f"  {branch}: filtered {before:,} → {len(rows):,} segments (≥{min_display_diam:.1f} μm)")
+        else:
+            print(f"  {branch}: loaded {len(rows):,} segments")
+    # Free pass-1 diameter arrays now that filtering is done
+    tree_diams.clear()
 
     # ── XCAT Coronaries ──
     xcat_colors = {"LAD": "#7dd3fc", "LCX": "#fca5a5", "RCA": "#86efac"}
@@ -337,7 +427,7 @@ def main():
             })
 
     if not all_diams:
-        print("No tree data found!"); return
+        print("No tree data after filtering!"); return
 
     # ── Grown tree mesh3d cylinders (diameter-binned for filter support) ──
     dmin = math.floor(min(all_diams))

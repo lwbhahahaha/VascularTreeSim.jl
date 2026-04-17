@@ -98,5 +98,6 @@ function _nearest_surface_info(points::Matrix{Float64}, normals::Matrix{Float64}
     ny = normals[best_idx, 2]
     nz = normals[best_idx, 3]
     signed_dist = dx * nx + dy * ny + dz * nz
-    return best_idx, signed_dist
+    euclid_dist = sqrt(best_d2)
+    return best_idx, signed_dist, euclid_dist
 end
