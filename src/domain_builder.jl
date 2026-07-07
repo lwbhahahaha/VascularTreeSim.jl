@@ -484,3 +484,74 @@ function build_voxel_shell_domain_floodfill(outer_surface::XCATNurbsSurface, cav
     center = 0.5 .* (lo .+ hi)
     return VoxelShellDomain(mask, lo, spacing, center, outer_points_s, outer_normals_s, cavity_points_s, cavity_normals_s, outer_grid, cavity_grids)
 end
+
+# In-place 6-neighbour box dilation, repeated `r` times.
+function _dilate_box!(m::BitArray{3}, r::Int)
+    r <= 0 && return m
+    dims = size(m)
+    for _ in 1:r
+        prev = copy(m)
+        @inbounds for k in 1:dims[3], j in 1:dims[2], i in 1:dims[1]
+            prev[i, j, k] && continue
+            ((i > 1        && prev[i-1, j, k]) || (i < dims[1] && prev[i+1, j, k]) ||
+             (j > 1        && prev[i, j-1, k]) || (j < dims[2] && prev[i, j+1, k]) ||
+             (k > 1        && prev[i, j, k-1]) || (k < dims[3] && prev[i, j, k+1])) || continue
+            m[i, j, k] = true
+        end
+    end
+    return m
+end
+
+"""
+    restrict_mask_to_labels!(domain, label_raw_path, xcat_dims, xcat_voxel_cm,
+                             nrb_to_phantom_offset_cm, allowed_labels; dilate_voxels=2)
+
+Intersect the growth-domain mask with an XCAT label volume so the trees grow only
+inside the true myocardium (labels 15-18) instead of the whole pericardial sac.
+Each domain voxel center (NRB cm) is mapped to its XCAT phantom voxel via
+`phantom_cm = nrb_cm + nrb_to_phantom_offset_cm`, `voxel = floor(phantom_cm /
+xcat_voxel_cm) + 1` (same convention as apply_contrast_at_peak.jl), and the mask is
+cleared where the XCAT label is not in `allowed_labels`. The muscle set is dilated
+by `dilate_voxels` first so epicardial trunk seeds stay reachable for path routing.
+"""
+function restrict_mask_to_labels!(domain::VoxelShellDomain, label_raw_path::AbstractString,
+        xcat_dims::NTuple{3, Int}, xcat_voxel_cm::Float64,
+        nrb_to_phantom_offset_cm::SVector{3, Float64}, allowed_labels::Set{UInt8};
+        dilate_voxels::Int = 2, replace::Bool = false)
+    isfile(label_raw_path) || error("restrict label raw not found: $label_raw_path")
+    raw = Vector{UInt8}(undef, prod(xcat_dims))
+    read!(label_raw_path, raw)
+    xc = reshape(raw, xcat_dims)
+    nx, ny, nz = xcat_dims
+    o = domain.origin_cm; sp = domain.spacing_cm; off = nrb_to_phantom_offset_cm
+    inv_xv = 1.0 / xcat_voxel_cm
+    dims = size(domain.mask)
+    # `replace=true`: build the mask straight from the XCAT muscle voxels over the
+    #   whole grid (the NURBS sac mask is discarded). Use this when the sac and the
+    #   muscle labels are poorly aligned — the muscle labels ARE the ground truth.
+    # `replace=false`: intersect the existing sac mask with the muscle labels.
+    musc = falses(dims...)
+    @inbounds for k in 1:dims[3], j in 1:dims[2], i in 1:dims[1]
+        (replace || domain.mask[i, j, k]) || continue
+        px = o[1] + (i - 0.5) * sp[1] + off[1]
+        py = o[2] + (j - 0.5) * sp[2] + off[2]
+        pz = o[3] + (k - 0.5) * sp[3] + off[3]
+        ii = floor(Int, px * inv_xv) + 1
+        jj = floor(Int, py * inv_xv) + 1
+        kk = floor(Int, pz * inv_xv) + 1
+        (1 <= ii <= nx && 1 <= jj <= ny && 1 <= kk <= nz) || continue
+        (xc[ii, jj, kk] in allowed_labels) && (musc[i, j, k] = true)
+    end
+    n_musc = count(musc)
+    dilate_voxels > 0 && _dilate_box!(musc, dilate_voxels)
+    n_before = count(domain.mask)
+    if replace
+        domain.mask .= musc
+    else
+        domain.mask .&= musc
+    end
+    println("[domain] $(replace ? "set→" : "restrict→")XCAT labels $(sort(collect(allowed_labels))): ",
+            "muscle=$(n_musc) (+dilate $(dilate_voxels)) → mask $(n_before) → $(count(domain.mask)) vox")
+    flush(stdout)
+    return domain
+end

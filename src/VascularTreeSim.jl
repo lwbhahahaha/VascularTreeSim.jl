@@ -70,6 +70,7 @@ export parse_xcat_nrb,
 
 # ── Domain construction ──
 export build_voxel_shell_domain_floodfill,
+       restrict_mask_to_labels!,
        voxel_mask_points,
        coverage_target_points,
        coverage_target_points_blockwise,

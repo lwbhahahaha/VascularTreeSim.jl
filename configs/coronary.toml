@@ -63,13 +63,23 @@ cavity_samples = [56, 40]
 dilation_radius = 1
 coarse_seed_cm = [14.085, 21.628, 26.966]   # From coarse (0.05cm) midwall computation
 
+# Restrict growth to the true myocardium (XCAT labels 15-18). At 0.02 cm the domain
+# grid is 1:1 with the XCAT grid, so the muscle mask is captured accurately (~174 mL).
+restrict_label_raw = "/home/molloi-lab/smb_mount/shared_drive/Shu Nie/PVAT_Analysis/digital phantoms/vmale50_1600x1400x500_8bit_little_endian_act_1.raw"
+phantom_dims = [1600, 1400, 500]
+phantom_voxel_cm = 0.02
+nrb_to_phantom_offset_cm = [2.1443, -9.5553, -20.0068]
+restrict_labels = [15, 16, 17, 18]
+restrict_dilate_voxels = 1
+restrict_replace = true   # build domain straight from XCAT muscle (NURBS sac covers only 22% of it)
+
 [growth]
 mode = "continue_from_xcat"     # Continue from existing XCAT LAD/LCX/RCA
 effective_supply_radius_cm = 0.00125   # 12.5 μm
 capillary_diameter_cm = 0.0008         # 8 μm  (legacy: kept for backwards compat)
 terminal_diameter_cm = 0.02            # 200 μm — Murray-strict terminal (leaf) diameter for growth phase
 subdivision_terminal_diameter_cm = 0.0006   # 6 μm (lower than 8 μm Pries F-L minimum, climbing onto capillary-viscosity-rise portion of Pries 1992 curve); was 0.0008
-subdivision_clip_below_diameter_cm = 0.005  # only clip sub-branches at arteriole scale (<50 μm); larger sub-branches allowed to extend outside myocardium (cf. real epicardial anatomy)
+subdivision_clip_below_diameter_cm = 0.02   # clip ALL subdivision branches to the muscle domain (was 0.005, which let 50-200 μm escape)
 subdivision_max_ld_ratio = 25.0             # post-subdivision safety net: split any residual L/d > 25 segment into shorter pieces at the same diameter
 max_new_branches_per_tree = 200000     # very large cap — real stop is Murray budget exhaustion / coverage
 graph_neighbors = 16                   # v5 fine run
@@ -80,8 +90,8 @@ murray_gamma = 3.0
 max_segment_length_cm = 0.1
 smooth_passes = 20
 spline_density = 5
-coverage_stride = 4                    # v5 fine run
-graph_stride = 12                      # v5 fine run
+coverage_stride = 3                    # densify: more 200μm terminals → denser capillary bed (was 4)
+graph_stride = 8                       # densify: finer routing graph → terminals snap to ~1.2mm not 2.4mm (was 12)
 graph_jitter_cm = 0.08                 # v5 fine run
 turn_penalty = 0.5
 target_p95_distance_cm = 0.005         # v5 fine run stopping criterion

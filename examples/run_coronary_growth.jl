@@ -18,12 +18,14 @@ using VascularTreeSim
 using Dates
 using Printf
 using Random
+using TOML
+using StaticArrays: SVector
 
 # ══════════════════════════════════════════════════════════════
 # Configuration
 # ══════════════════════════════════════════════════════════════
 const CONFIG_PATH = length(ARGS) >= 1 ? ARGS[1] : joinpath(dirname(@__DIR__), "configs", "coronary.toml")
-const OUTPUT_DIR = joinpath(dirname(@__DIR__), "output")
+const OUTPUT_DIR = length(ARGS) >= 2 ? ARGS[2] : joinpath(dirname(@__DIR__), "output")
 const RUN_TIMESTAMP = Dates.format(Dates.now(), "yyyymmdd_HHMMSS")
 
 println("═" ^ 60)
@@ -64,6 +66,24 @@ domain = build_voxel_shell_domain_floodfill(outer_surface, cavity_surface_list;
     cavity_samples=config.cavity_samples,
     dilation_radius=config.dilation_radius,
     coarse_seed_cm=config.coarse_seed_cm)
+
+# ── Optional: restrict growth domain to the true myocardium (XCAT labels) ──
+# Without this the domain is the whole pericardial sac (incl. epicardial fat,
+# chambers, lung), so most grown vessel volume lands outside the muscle. With it,
+# the trees grow only inside labels 15-18 and the myocardial blood volume emerges
+# correctly when the tree is voxelized back.
+let dom_cfg = TOML.parsefile(CONFIG_PATH)["domain"]
+    if get(dom_cfg, "restrict_label_raw", "") != ""
+        restrict_mask_to_labels!(domain,
+            dom_cfg["restrict_label_raw"],
+            (Int(dom_cfg["phantom_dims"][1]), Int(dom_cfg["phantom_dims"][2]), Int(dom_cfg["phantom_dims"][3])),
+            Float64(dom_cfg["phantom_voxel_cm"]),
+            SVector{3, Float64}(Float64.(dom_cfg["nrb_to_phantom_offset_cm"])...),
+            Set(UInt8.(dom_cfg["restrict_labels"]));
+            dilate_voxels = Int(get(dom_cfg, "restrict_dilate_voxels", 2)),
+            replace = Bool(get(dom_cfg, "restrict_replace", false)))
+    end
+end
 
 n_domain = count(domain.mask)
 println("  Domain built: $(n_domain) voxels")

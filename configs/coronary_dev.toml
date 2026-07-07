@@ -67,13 +67,22 @@ cavity_samples = [28, 20]       # DEV: halved (full: [56, 40])
 dilation_radius = 1
 coarse_seed_cm = [14.085, 21.628, 26.966]   # Works for 0.05 cm voxels (was computed at that scale)
 
+# Restrict growth to the true myocardium (XCAT labels 15-18) instead of the whole
+# pericardial sac. Each domain voxel (NRB cm) → XCAT phantom voxel via the offset.
+restrict_label_raw = "/home/molloi-lab/smb_mount/shared_drive/Shu Nie/PVAT_Analysis/digital phantoms/vmale50_1600x1400x500_8bit_little_endian_act_1.raw"
+phantom_dims = [1600, 1400, 500]
+phantom_voxel_cm = 0.02
+nrb_to_phantom_offset_cm = [2.1443, -9.5553, -20.0068]
+restrict_labels = [15, 16, 17, 18]
+restrict_dilate_voxels = 2
+
 [growth]
 mode = "continue_from_xcat"
 effective_supply_radius_cm = 0.00125
 capillary_diameter_cm = 0.0008
 terminal_diameter_cm = 0.02            # 200 μm growth-phase terminal
 subdivision_terminal_diameter_cm = 0.0006   # 6 μm (SAME as full; off Pries minimum onto capillary viscosity rise)
-subdivision_clip_below_diameter_cm = 0.005  # SAME as full
+subdivision_clip_below_diameter_cm = 0.02   # clip ALL subdivision branches to muscle domain (was 0.005)
 subdivision_max_ld_ratio = 25.0             # SAME as full
 max_new_branches_per_tree = 5000       # DEV: much smaller (full: 200000)
 graph_neighbors = 16

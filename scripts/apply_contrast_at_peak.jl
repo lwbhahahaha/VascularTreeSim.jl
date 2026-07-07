@@ -11,9 +11,11 @@
 #                           contains {tree}_peak_iodine.f32 + peak_metadata.toml
 #   - OUTPUT_DIR            where to write the modified UInt16 raw + manifest
 #
-# Per voxel:
-#   f_blood        = Σ (capsule sub-voxel inside-fraction)           [clipped to 1.0]
-#   f_iodine_w     = Σ (capsule sub-voxel inside-fraction × C_iodine_capsule)
+# Per voxel (true occupied-volume "tofu" measure, no MBV imposed):
+#   f_blood        = Σ (vessel ∩ voxel volume) / voxel_volume        [clipped to 1.0]
+#                    resolvable vessels (≥200 μm): sub-voxel MC cross-section
+#                    sub-voxel capillaries:        π r²·(centerline length in voxel)
+#   f_iodine_w     = Σ (same volume fraction × C_iodine_segment)
 #   C_iodine_voxel = f_iodine_w / f_blood                            [iodine mg/mL of blood]
 #
 # Cross-product encoding (UInt16):
@@ -48,6 +50,14 @@ const MYO_LABELS = (UInt16(15), UInt16(16), UInt16(17), UInt16(18))
 
 # ── Render tuning ────────────────────────────────────────────────────────────
 const DEFAULT_N_SUB = 5
+# Crossover diameter between the two volume-measurement methods. Vessels ≥ this
+# (≈ voxel size) are resolvable: sub-voxel MC gives their cross-sectional volume
+# fraction. Vessels below it are sub-resolution: MC misses them, so we deposit
+# their exact lumen volume π r²·(centerline length in voxel) instead. Both yield
+# the same quantity — (vessel ∩ voxel) volume / voxel volume — so the total
+# myocardial blood volume EMERGES from the grown geometry (no MBV imposed).
+const MIN_VOXELIZE_DIAM_CM = 0.02f0
+# Parse-time filter (keep 0.0 so segment↔peak_iodine indexing stays aligned).
 const MIN_RENDER_DIAMETER_CM = 0.0
 
 const OUT_RAW_BASENAME = "vmale50_with_grown_coronaries_peak_contrast_u16.raw"
@@ -172,6 +182,7 @@ function rasterize_capsules_vf_iodine!(f_blood::Array{Float32,3},
     voxel_cm = Float32(VOXEL_CM)
     inv_voxel_cm = Float32(1 / VOXEL_CM)
     inv_n_sub_total = Float32(1 / n_sub^3)
+    inv_vox_vol = Float32(1 / VOXEL_CM^3)            # 1 / voxel volume (cm⁻³)
     sub_offsets = Float32[((2 * i - 1 - n_sub) / Float32(2 * n_sub)) * voxel_cm for i in 1:n_sub]
 
     nt = nthreads()
@@ -191,9 +202,46 @@ function rasterize_capsules_vf_iodine!(f_blood::Array{Float32,3},
             ax = A[1,s]; ay = A[2,s]; az = A[3,s]
             bx = A[4,s]; by = A[5,s]; bz = A[6,s]
             r_cm = A[7,s]
-            r2 = r_cm * r_cm
             ci = c_iodine[s]
+            abx = bx - ax;  aby = by - ay;  abz = bz - az
+            ab_len2 = abx*abx + aby*aby + abz*abz
 
+            # ── Sub-resolution vessels (< MIN_VOXELIZE_DIAM_CM): MC sampling at the
+            #    sub-voxel spacing misses them, so deposit their EXACT lumen volume
+            #    π r² · (centerline length within each voxel) / voxel_volume. This is
+            #    resolution-independent: an 8 μm capillary contributes its true (tiny)
+            #    volume fraction, and the diffuse MBV then EMERGES from the geometry. ──
+            if 2f0 * r_cm < MIN_VOXELIZE_DIAM_CM
+                seg_len = sqrt(ab_len2)
+                if seg_len > 1f-12
+                    area = Float32(pi) * r_cm * r_cm
+                    n_st = max(1, ceil(Int, seg_len * inv_voxel_cm * 2f0))   # ≥2 samples/voxel
+                    frac_per = area * (seg_len / Float32(n_st)) * inv_vox_vol
+                    last_idx = Int32(0);  acc = 0f0
+                    for m in 1:n_st
+                        tt = (Float32(m) - 0.5f0) / Float32(n_st)
+                        px = ax + tt*abx;  py = ay + tt*aby;  pz = az + tt*abz
+                        ii = floor(Int, px * inv_voxel_cm) + 1
+                        jj = floor(Int, py * inv_voxel_cm) + 1
+                        kk = floor(Int, pz * inv_voxel_cm) + 1
+                        (ii < 1 || ii > nx || jj < 1 || jj > ny || kk < 1 || kk > nz) && continue
+                        is_myo(phantom[ii, jj, kk]) || continue
+                        idx = Int32(((kk - 1) * ny + (jj - 1)) * nx + ii)
+                        if idx == last_idx
+                            acc += frac_per
+                        else
+                            last_idx != 0 && (push!(bi, last_idx); push!(bb, acc); push!(bk, acc * ci))
+                            last_idx = idx;  acc = frac_per
+                        end
+                    end
+                    last_idx != 0 && (push!(bi, last_idx); push!(bb, acc); push!(bk, acc * ci))
+                end
+                continue
+            end
+
+            # ── Resolvable vessels (≥ MIN_VOXELIZE_DIAM_CM): sub-voxel MC gives the
+            #    cross-sectional volume fraction (cylinder ∩ voxel) / voxel directly. ──
+            r2 = r_cm * r_cm
             lo_x = min(ax, bx) - r_cm;  hi_x = max(ax, bx) + r_cm
             lo_y = min(ay, by) - r_cm;  hi_y = max(ay, by) + r_cm
             lo_z = min(az, bz) - r_cm;  hi_z = max(az, bz) + r_cm
@@ -206,8 +254,6 @@ function rasterize_capsules_vf_iodine!(f_blood::Array{Float32,3},
             k1 = min(nz, ceil(Int,  hi_z * inv_voxel_cm) + 1)
             (i0 > i1 || j0 > j1 || k0 > k1) && continue
 
-            abx = bx - ax;  aby = by - ay;  abz = bz - az
-            ab_len2 = abx*abx + aby*aby + abz*abz
             degenerate = ab_len2 <= 1f-24
 
             for kk in k0:k1
@@ -276,6 +322,11 @@ function quantize_cross_product_and_apply!(phantom::Array{UInt16,3},
                                            f_iodine_w::Array{Float32,3},
                                            iodine_max_mg_per_mL::Float32)
     nx, ny, nz = size(phantom)
+
+    # f_blood now holds the EMERGENT blood volume fraction per voxel — the real
+    # lumen volume of the grown tree (conducting + capillary) intersected with the
+    # voxel, divided by voxel volume. No MBV is imposed: the myocardial blood
+    # volume is whatever the geometry produces.
     bin_counts_b = zeros(Int64, N_BLOOD_BINS + 1)    # bins 0..N_BLOOD_BINS
     bin_counts_i = zeros(Int64, N_IODINE_BINS + 1)
     per_thread_b = [zeros(Int64, N_BLOOD_BINS + 1) for _ in 1:nthreads()]
@@ -289,14 +340,12 @@ function quantize_cross_product_and_apply!(phantom::Array{UInt16,3},
         @inbounds for j in 1:ny, i in 1:nx
             v = phantom[i, j, k]
             is_myo(v) || continue
-            f = f_blood[i, j, k]
+            f = f_blood[i, j, k]                             # emergent blood volume fraction
             f <= 0f0 && continue
-            f_clipped = min(f, 1f0)
-            bin_b = round(Int, f_clipped * N_BLOOD_BINS)
+            f_total = min(f, 1f0)                            # union upper bound
+            bin_b = round(Int, f_total * N_BLOOD_BINS)
             lcb[bin_b + 1] += 1
-            if bin_b == 0
-                continue
-            end
+            bin_b == 0 && continue
             c_voxel = f_iodine_w[i, j, k] / max(f, eps(Float32))
             c_clipped = min(max(c_voxel, 0f0), iodine_max_mg_per_mL)
             bin_i = inv_iodine_max > 0f0 ? round(Int, c_clipped * inv_iodine_max * N_IODINE_BINS) : 0
